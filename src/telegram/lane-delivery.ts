@@ -328,17 +328,30 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams) {
       !hasMedia && text.length > 0 && text.length <= params.draftMaxChars && !payload.isError;
 
     if (infoKind === "final") {
-      // For DM draft mode (sendMessageDraft), the draft bubble auto-converts to final message.
-      // We only need to flush the draft and mark as delivered, no separate sendPayload needed.
-      // Check if we're in draft preview mode and have already streamed content.
-      if (isDraftPreviewLane(lane) && lane.hasStreamedMessage) {
-        // Flush any pending draft updates and stop the stream.
+      const hasPreviewButtons = Boolean(previewButtons?.some((row) => row.length > 0));
+      const canFinalizeDraftPreviewDirectly =
+        isDraftPreviewLane(lane) &&
+        lane.hasStreamedMessage &&
+        canEditViaPreview &&
+        !hasPreviewButtons;
+      let draftPreviewStopped = false;
+      if (canFinalizeDraftPreviewDirectly) {
+        const previewRevisionBeforeFlush = lane.stream?.previewRevision?.() ?? 0;
+        const alreadyAtFinalText = text === lane.lastPartialText;
         lane.stream?.update(text);
         await params.flushDraftLane(lane);
         await params.stopDraftLane(lane);
-        lane.lastPartialText = text;
-        params.markDelivered();
-        return "preview-finalized";
+        draftPreviewStopped = true;
+        const previewUpdated = (lane.stream?.previewRevision?.() ?? 0) > previewRevisionBeforeFlush;
+        if (previewUpdated || alreadyAtFinalText) {
+          lane.lastPartialText = text;
+          params.finalizedPreviewByLane[laneName] = true;
+          params.markDelivered();
+          return "preview-finalized";
+        }
+        params.log(
+          `telegram: ${laneName} draft finalization not emitted; falling back to standard send`,
+        );
       }
 
       if (laneName === "answer") {
@@ -353,7 +366,7 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams) {
           return archivedResult;
         }
       }
-      if (canEditViaPreview && !params.finalizedPreviewByLane[laneName]) {
+      if (canEditViaPreview && !params.finalizedPreviewByLane[laneName] && !draftPreviewStopped) {
         await params.flushDraftLane(lane);
         if (laneName === "answer") {
           const archivedResultAfterFlush = await consumeArchivedAnswerPreviewForFinal({
@@ -385,7 +398,9 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams) {
           `telegram: preview final too long for edit (${text.length} > ${params.draftMaxChars}); falling back to standard send`,
         );
       }
-      await params.stopDraftLane(lane);
+      if (!draftPreviewStopped) {
+        await params.stopDraftLane(lane);
+      }
       const delivered = await params.sendPayload(params.applyTextToPayload(payload, text));
       return delivered ? "sent" : "skipped";
     }
