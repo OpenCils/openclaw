@@ -8,6 +8,7 @@ export type DraftLaneState = {
   stream: TelegramDraftStream | undefined;
   lastPartialText: string;
   hasStreamedMessage: boolean;
+  previewRevisionBaseline: number;
 };
 
 export type ArchivedPreview = {
@@ -337,7 +338,9 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams) {
       let draftPreviewStopped = false;
       if (canFinalizeDraftPreviewDirectly) {
         const previewRevisionBeforeFlush = lane.stream?.previewRevision?.() ?? 0;
-        const alreadyAtFinalText = text === lane.lastPartialText;
+        const hasEmittedPreviewInCurrentLane =
+          previewRevisionBeforeFlush > lane.previewRevisionBaseline;
+        const alreadyAtFinalText = text === lane.lastPartialText && hasEmittedPreviewInCurrentLane;
         lane.stream?.update(text);
         await params.flushDraftLane(lane);
         await params.stopDraftLane(lane);
